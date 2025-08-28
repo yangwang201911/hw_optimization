@@ -20,9 +20,7 @@ float run_kernel(cl::CommandQueue &queue, cl::Context &context, cl::Kernel kerne
 	size_t lws = LWS;
 	size_t group_sz = gws / lws;
 	// std::cout << "  == Run kernel:" << std::endl;
-	std::cout << "  group_sz = " << group_sz << std::endl;
-	std::cout << "  gws = " << gws << std::endl;
-	std::cout << "  lws = " << lws << std::endl;
+	std::cout << "  group_sz = " << group_sz  << "  gws = " << gws << "  lws = " << lws << std::endl;
 
 	// Create buffers on the device
 	cl::Buffer buffer_IN_1(context, CL_MEM_READ_ONLY, sizeof(float) * array_data.size());
@@ -65,11 +63,15 @@ float run_ref(std::vector<float> &array_input)
 	return 0;
 }
 
-int main()
+int main(int argc, char** argv)
 {
 	std::cout << "== Test array max algorithm. " << std::endl;
 
 	std::string kernel_fn = "../04_array_max/src/array_max_kernel.cl";
+	if (argc > 1) {
+		kernel_fn = argv[1];
+		std::cout << "== Use kernel file from command line: " << kernel_fn << std::endl;
+	}
 	std::string kernel_entry = "get_array_max";
 
 	auto default_device = get_gpu_device();
@@ -114,7 +116,7 @@ int main()
 
 	std::cout << "== Create Kernel with program and run." << std::endl;
 	// alternative way to run the kernel
-	cl::Kernel max_kernel = cl::Kernel(program, kernel_entry);
+	cl::Kernel max_kernel = cl::Kernel(program, kernel_entry.c_str());
 
 	auto kernel_name = max_kernel.getInfo<CL_KERNEL_FUNCTION_NAME>();
 	std::cout << "== Test get kernel name from cl::Kernel, kernel_name = " << kernel_name << std::endl;
@@ -133,7 +135,7 @@ int main()
 
 	auto max_ref = run_ref(array_input);
 	auto max_ocl = run_kernel(queue, context, max_kernel, array_input);
-	int64_t sum_tm = 0;
+	std::vector<int64_t> times;
 	int loop_num = 10;
 	for (int i = 0; i < loop_num; i++)
 	{
@@ -141,11 +143,20 @@ int main()
 		max_ocl = run_kernel(queue, context, max_kernel, array_input);
 		auto t2 = std::chrono::high_resolution_clock::now();
 		auto diff = std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count();
-		std::cout << "  [" << i << "] host time = " << diff << " micr sec." << std::endl;
-		sum_tm += diff;
+		std::cout << "  [" << i << "] host time = " << diff << " us." << std::endl;
+		times.push_back(diff);
 	}
-	if (loop_num > 0)
-		std::cout << "  Mean time = " << sum_tm / loop_num << " micr sec." << std::endl;
+	if (loop_num > 2) {
+		// 去掉最大最小值，计算平均值
+		std::sort(times.begin(), times.end());
+		int64_t sum_tm = 0;
+		for (int i = 1; i < loop_num - 1; i++) {
+			sum_tm += times[i];
+		}
+		std::cout << "  Mean time (without min/max) = " << sum_tm / (loop_num - 2) << " us." << std::endl;
+	} else {
+		std::cout << "  Need at least 3 iterations to remove min/max." << std::endl;
+	}
 
 	std::cout << "== Done. " << std::endl;
 	bool bclose = is_close<float>({max_ref}, {max_ocl});
