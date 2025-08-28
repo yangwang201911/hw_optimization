@@ -10,6 +10,8 @@
 #include <fstream>
 #include <sstream>
 #include <iomanip>
+#include <random>
+#include <getopt.h>
 
 class DPPOpenCL {
 private:
@@ -115,7 +117,7 @@ public:
         auto end = std::chrono::high_resolution_clock::now();
         
         auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
-        std::cout << "OpenCL DPP execution time: " << duration.count() << " microseconds" << std::endl;
+        std::cout << "OpenCL DPP execution time: " << duration.count() << " us" << std::endl;
         
         // Read results
         std::vector<int> selected_flat(batch_size * T);
@@ -159,66 +161,99 @@ public:
     }
 };
 
-// Reference CPU implementation for comparison
-std::vector<std::vector<int>> dppCPUReference(const std::vector<float>& kernel_data,
-                                             int batch_size, int N, int T) {
-    std::vector<std::vector<int>> results(batch_size);
+// Function to generate a random positive definite kernel matrix
+std::vector<float> generateKernelMatrix(int N, int seed = 42) {
+    std::mt19937 gen(seed);
+    std::uniform_real_distribution<float> dis(0.1f, 1.0f);
     
-    for (int b = 0; b < batch_size; b++) {
-        std::vector<float> di2s(N);
-        std::vector<bool> selected(N, false);
-        std::vector<int> selected_indices;
-        
-        // Initialize diagonal elements
-        for (int i = 0; i < N; i++) {
-            int idx = b * N * N + i * N + i;
-            di2s[i] = kernel_data[idx];
-        }
-        
-        // Greedy selection
-        for (int t = 0; t < T; t++) {
-            // Find best token
-            int best_idx = -1;
-            float best_value = -std::numeric_limits<float>::infinity();
-            
-            for (int i = 0; i < N; i++) {
-                if (!selected[i] && di2s[i] > best_value) {
-                    best_value = di2s[i];
-                    best_idx = i;
-                }
-            }
-            
-            if (best_idx == -1) break;
-            
-            selected_indices.push_back(best_idx);
-            selected[best_idx] = true;
-            
-            // Simplified update (this is a basic approximation)
-            for (int j = 0; j < N; j++) {
-                if (!selected[j]) {
-                    di2s[j] *= 0.9f;  // Simple decay approximation
+    std::vector<float> kernel_matrix(N * N);
+    
+    // Generate a random matrix and make it symmetric positive definite
+    for (int i = 0; i < N; i++) {
+        for (int j = 0; j < N; j++) {
+            if (i <= j) {
+                if (i == j) {
+                    // Diagonal elements - ensure positive definiteness
+                    kernel_matrix[i * N + j] = dis(gen) + 0.5f;
+                } else {
+                    // Off-diagonal elements
+                    float val = dis(gen) * 0.5f;  // Smaller off-diagonal values
+                    kernel_matrix[i * N + j] = val;
+                    kernel_matrix[j * N + i] = val;  // Symmetric
                 }
             }
         }
-        
-        results[b] = selected_indices;
     }
     
-    return results;
+    return kernel_matrix;
+}
+
+// Function to print usage information
+void printUsage(const char* program_name) {
+    std::cout << "Usage: " << program_name << " [options] <kernel_file.cl>" << std::endl;
+    std::cout << "Options:" << std::endl;
+    std::cout << "  -t <tokens>     Total number of tokens (default: 4, uses predefined 4x4 matrix)" << std::endl;
+    std::cout << "  -s <percentage> Percentage of tokens to select (default: 75, range: 1-100)" << std::endl;
+    std::cout << "  -h              Show this help message" << std::endl;
+    std::cout << std::endl;
+    std::cout << "Examples:" << std::endl;
+    std::cout << "  " << program_name << " dpp_kernel.cl                    # Use default 4x4 matrix, select 3 tokens" << std::endl;
+    std::cout << "  " << program_name << " -t 100 -s 20 dpp_kernel.cl       # Generate 100x100 matrix, select 20 tokens" << std::endl;
+    std::cout << "  " << program_name << " -t 50 -s 50 dpp_kernel.cl        # Generate 50x50 matrix, select 25 tokens" << std::endl;
 }
 
 int main(int argc, char** argv) {
     try {
+        // Default parameters
+        int N = 4;  // Default: use predefined 4x4 matrix
+        float select_percentage = 75.0f;  // Default: select 75% of tokens
+        std::string kernel_file = "dpp_kernel.cl";
+        bool use_custom_matrix = false;
+        
+        // Parse command line arguments
+        int opt;
+        while ((opt = getopt(argc, argv, "t:s:h")) != -1) {
+            switch (opt) {
+                case 't':
+                    N = std::atoi(optarg);
+                    if (N <= 0) {
+                        std::cerr << "Error: Number of tokens must be positive" << std::endl;
+                        return 1;
+                    }
+                    use_custom_matrix = true;
+                    break;
+                case 's':
+                    select_percentage = std::atof(optarg);
+                    if (select_percentage <= 0 || select_percentage > 100) {
+                        std::cerr << "Error: Selection percentage must be between 1 and 100" << std::endl;
+                        return 1;
+                    }
+                    break;
+                case 'h':
+                    printUsage(argv[0]);
+                    return 0;
+                default:
+                    printUsage(argv[0]);
+                    return 1;
+            }
+        }
+        
+        // Get kernel file name from remaining arguments
+        if (optind < argc) {
+            kernel_file = argv[optind];
+        }
+        
+        // Calculate number of tokens to select
+        int T = std::max(1, static_cast<int>(std::round(N * select_percentage / 100.0f)));
+        
         std::cout << "=== DPP OpenCL Test ===" << std::endl;
+        std::cout << "Parameters:" << std::endl;
+        std::cout << "  Total tokens (N): " << N << std::endl;
+        std::cout << "  Tokens to select (T): " << T << " (" << select_percentage << "%)" << std::endl;
+        std::cout << "  Kernel file: " << kernel_file << std::endl;
         
         // Initialize OpenCL
         DPPOpenCL dpp_ocl;
-        
-        // Load kernel
-        std::string kernel_file = "dpp_kernel.cl";
-        if (argc > 1) {
-            kernel_file = argv[1];
-        }
         
         std::cout << "\n=== Loading kernel file ===" << std::endl;
         dpp_ocl.loadKernel(kernel_file);
@@ -231,54 +266,52 @@ int main(int argc, char** argv) {
         std::cout << "\n=== Testing DPP Algorithm ===" << std::endl;
         
         const int batch_size = 1;
-        const int N = 4;  // Number of tokens
-        const int T = 2;  // Tokens to select
+        std::vector<float> kernel_data;
         
-        // Create test kernel matrix (4x4)
-        std::vector<float> kernel_data = {
-            // Batch 0
-            0.8f, 0.3f, 0.1f, 0.2f,  // token 0 row
-            0.3f, 0.9f, 0.4f, 0.1f,  // token 1 row
-            0.1f, 0.4f, 0.7f, 0.5f,  // token 2 row
-            0.2f, 0.1f, 0.5f, 0.6f   // token 3 row
-        };
+        if (use_custom_matrix) {
+            // Generate custom kernel matrix
+            std::cout << "Generating " << N << "x" << N << " kernel matrix..." << std::endl;
+            kernel_data = generateKernelMatrix(N);
+        } else {
+            // Use predefined 4x4 matrix
+            kernel_data = {
+                // Batch 0
+                0.8f, 0.3f, 0.1f, 0.2f,  // token 0 row
+                0.3f, 0.9f, 0.4f, 0.1f,  // token 1 row
+                0.1f, 0.4f, 0.7f, 0.5f,  // token 2 row
+                0.2f, 0.1f, 0.5f, 0.6f   // token 3 row
+            };
+        }
         
-        std::cout << "Input kernel matrix [" << batch_size << "x" << N << "x" << N << "]:" << std::endl;
-        for (int i = 0; i < N; i++) {
-            std::cout << "  [";
-            for (int j = 0; j < N; j++) {
-                std::cout << std::fixed << std::setprecision(1) << kernel_data[i * N + j];
-                if (j < N-1) std::cout << ", ";
+        // Print kernel matrix (only for small matrices)
+        if (N <= 10) {
+            std::cout << "Input kernel matrix [" << batch_size << "x" << N << "x" << N << "]:" << std::endl;
+            for (int i = 0; i < N; i++) {
+                std::cout << "  [";
+                for (int j = 0; j < N; j++) {
+                    std::cout << std::fixed << std::setprecision(3) << kernel_data[i * N + j];
+                    if (j < N-1) std::cout << ", ";
+                }
+                std::cout << "]" << std::endl;
             }
-            std::cout << "]" << std::endl;
+        } else {
+            std::cout << "Using generated " << N << "x" << N << " kernel matrix (too large to display)" << std::endl;
         }
         
         // Run OpenCL implementation
         auto ocl_result = dpp_ocl.selectTokens(kernel_data, batch_size, N, T);
         
-        // Run CPU reference
-        auto start = std::chrono::high_resolution_clock::now();
-        auto cpu_result = dppCPUReference(kernel_data, batch_size, N, T);
-        auto end = std::chrono::high_resolution_clock::now();
-        auto cpu_duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
-        
-        std::cout << "CPU reference time: " << cpu_duration.count() << " microseconds" << std::endl;
-        
         // Print results
-        std::cout << "\nResults comparison:" << std::endl;
+        std::cout << "\nOpenCL DPP Results:" << std::endl;
         for (int b = 0; b < batch_size; b++) {
-            std::cout << "Batch " << b << ":" << std::endl;
-            std::cout << "  OpenCL: [";
-            for (size_t i = 0; i < ocl_result[b].size(); i++) {
+            std::cout << "Batch " << b << ": [";
+            size_t display_count = std::min(ocl_result[b].size(), static_cast<size_t>(10));
+            for (size_t i = 0; i < display_count; i++) {
                 std::cout << ocl_result[b][i];
-                if (i < ocl_result[b].size()-1) std::cout << ", ";
+                if (i < display_count-1) std::cout << ", ";
             }
-            std::cout << "]" << std::endl;
-            
-            std::cout << "  CPU:    [";
-            for (size_t i = 0; i < cpu_result[b].size(); i++) {
-                std::cout << cpu_result[b][i];
-                if (i < cpu_result[b].size()-1) std::cout << ", ";
+            if (ocl_result[b].size() > 10) {
+                std::cout << ", +" << (ocl_result[b].size() - 10) << " more";
             }
             std::cout << "]" << std::endl;
         }

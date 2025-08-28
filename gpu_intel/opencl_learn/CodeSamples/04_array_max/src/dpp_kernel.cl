@@ -5,6 +5,7 @@
 
 #pragma OPENCL EXTENSION cl_khr_global_int32_base_atomics : enable
 #pragma OPENCL EXTENSION cl_khr_global_int32_extended_atomics : enable
+#pragma OPENCL EXTENSION cl_intel_printf : enable
 
 // ==================== Utility Functions ====================
 
@@ -281,6 +282,28 @@ __kernel void dpp_batch_process(__global const float* kernel_matrix,
     
     // Main DPP selection loop
     for (int t = 0; t < T; t++) {
+        // Debug: Print current marginal gains (only first work item of first batch, and only first 10 iterations)
+        if (batch_idx == 0 && local_id == 0 && t < 10) {
+            printf("=== Iteration %d ===\n", t);
+            printf("Current marginal gains: [");
+            int display_count = min(N, 10);
+            for (int i = 0; i < display_count; i++) {
+                int di2s_idx = batch_idx * N + i;
+                if (selected_mask[di2s_idx] == 0) {
+                    printf("%.3f", di2s[di2s_idx]);
+                } else {
+                    printf("SELECTED");
+                }
+                if (i < display_count-1) printf(", ");
+            }
+            if (N > 10) {
+                printf(", +%d more", N - 10);
+            }
+            printf("]\n");
+        }
+        
+        barrier(CLK_LOCAL_MEM_FENCE | CLK_GLOBAL_MEM_FENCE);
+        
         // Find best token for this iteration
         int best_idx = -1;
         float best_value = -INFINITY;
@@ -319,6 +342,11 @@ __kernel void dpp_batch_process(__global const float* kernel_matrix,
         // Store selected index
         if (local_id == 0) {
             selected_indices[batch_idx * T + t] = selected_idx;
+        }
+        
+        // Debug: Print selection result (only first work item of first batch, and only first 10 iterations)
+        if (batch_idx == 0 && local_id == 0 && t < 10) {
+            printf("Selected token %d with marginal gain %.3f\n", selected_idx, local_values[0]);
         }
         
         // Calculate norm_factor BEFORE marking token as selected
@@ -373,6 +401,27 @@ __kernel void dpp_batch_process(__global const float* kernel_matrix,
         }
         
         barrier(CLK_LOCAL_MEM_FENCE | CLK_GLOBAL_MEM_FENCE);
+        
+        // Debug: Print updated marginal gains (only first work item of first batch, and only first 10 iterations)
+        if (batch_idx == 0 && local_id == 0 && t < 10) {
+            printf("Updated marginal gains: [");
+            int display_count = min(N, 10);
+            for (int i = 0; i < display_count; i++) {
+                int di2s_idx = batch_idx * N + i;
+                if (selected_mask[di2s_idx] == 0) {
+                    printf("%.3f", di2s[di2s_idx]);
+                } else {
+                    printf("SELECTED");
+                }
+                if (i < display_count-1) printf(", ");
+            }
+            if (N > 10) {
+                printf(", +%d more", N - 10);
+            }
+            printf("]\n\n");
+        } else if (batch_idx == 0 && local_id == 0 && t == 10) {
+            printf("... (remaining %d iterations not shown)\n\n", T - 10);
+        }
     }
 }
 
