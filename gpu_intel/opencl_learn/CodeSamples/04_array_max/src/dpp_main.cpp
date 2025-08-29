@@ -21,9 +21,7 @@ private:
     cl::Device device;
     
     // Kernels
-    cl::Kernel kernel_init_diagonal;
     cl::Kernel kernel_batch_process;
-    cl::Kernel kernel_test;
 
 public:
     DPPOpenCL() {
@@ -77,9 +75,7 @@ public:
         }
         
         // Create kernels
-        kernel_init_diagonal = cl::Kernel(program, "dpp_init_diagonal");
         kernel_batch_process = cl::Kernel(program, "dpp_batch_process");
-        kernel_test = cl::Kernel(program, "dpp_test_kernel");
         
         std::cout << "Kernels loaded successfully!" << std::endl;
     }
@@ -120,31 +116,6 @@ public:
         
         auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
         std::cout << "  GPU kernel execution time: " << duration.count() << " ms" << std::endl;
-    }
-    
-    void testSimpleKernel() {
-        std::cout << "\n=== Testing simple kernel ===" << std::endl;
-        
-        std::vector<float> input = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f};
-        std::vector<float> output(input.size());
-        
-        cl::Buffer buffer_in(context, CL_MEM_READ_ONLY, sizeof(float) * input.size());
-        cl::Buffer buffer_out(context, CL_MEM_WRITE_ONLY, sizeof(float) * output.size());
-        
-        queue.enqueueWriteBuffer(buffer_in, CL_TRUE, 0, sizeof(float) * input.size(), input.data());
-        
-        kernel_test.setArg(0, buffer_in);
-        kernel_test.setArg(1, buffer_out);
-        kernel_test.setArg(2, (int)input.size());
-        
-        queue.enqueueNDRangeKernel(kernel_test, cl::NullRange, cl::NDRange(input.size()), cl::NullRange);
-        queue.enqueueReadBuffer(buffer_out, CL_TRUE, 0, sizeof(float) * output.size(), output.data());
-        
-        std::cout << "Input:  ";
-        for (float v : input) std::cout << v << " ";
-        std::cout << "\nOutput: ";
-        for (float v : output) std::cout << v << " ";
-        std::cout << std::endl;
     }
 };
 
@@ -242,10 +213,6 @@ int main(int argc, char** argv) {
         std::cout << "\n=== Loading kernel file ===" << std::endl;
         dpp_ocl.loadKernel(kernel_file);
 
-        // Test simple kernel first
-        std::cout << "\n=== Test Simple Kernel ===" << std::endl;
-        dpp_ocl.testSimpleKernel();
-        
         // Test DPP algorithm
         std::cout << "\n=== Testing DPP Algorithm ===" << std::endl;
         

@@ -186,55 +186,6 @@ __kernel void dpp_update_orthogonal_vector(__global const float* kernel_matrix,
     cis[cis_out_idx] = eis_value * inv_norm;
 }
 
-/**
- * @brief Update marginal gains after selecting a token
- * @param cis Orthogonalized vectors [T, N]
- * @param di2s Marginal gains [batch_size, N] (input/output, also contains selection marking)
- * @param batch_idx Batch index
- * @param iteration Current iteration number
- * @param N Number of tokens
- */
-__kernel void dpp_update_marginal_gains(__global const float* cis,
-                                      __global float* di2s,
-                                      const int batch_idx,
-                                      const int iteration,
-                                      const int N) {
-    const int token_id = get_global_id(0);
-    
-    if (token_id >= N) return;
-    
-    int di2s_idx = batch_idx * N + token_id;
-    
-    // Skip if token is already selected (marked with -INFINITY)
-    if (di2s[di2s_idx] == -INFINITY) return;
-    
-    // Get the orthogonal component for this token
-    int cis_idx = iteration * N + token_id;
-    float eis_j = cis[cis_idx];
-    
-    // Update marginal gain: di2s[token_id] -= eis_j^2
-    di2s[di2s_idx] -= eis_j * eis_j;
-}
-
-/**
- * @brief Mark selected token to prevent re-selection (use -INFINITY)
- * @param di2s Marginal gains [batch_size, N] (input/output, also used for selection marking)
- * @param batch_idx Batch index
- * @param selected_idx Index of selected token
- * @param N Number of tokens
- */
-__kernel void dpp_mark_selected_token(__global float* di2s,
-                                    const int batch_idx,
-                                    const int selected_idx,
-                                    const int N) {
-    const int token_id = get_global_id(0);
-    
-    if (token_id != selected_idx || token_id >= N) return;
-    
-    int idx = batch_idx * N + token_id;
-    di2s[idx] = -INFINITY;  // Mark as selected with negative infinity
-}
-
 // ==================== Batch Processing Kernels ====================
 
 /**
@@ -407,19 +358,5 @@ __kernel void dpp_batch_process(__global const float* kernel_matrix,
             printf(", +%d more", T - 10);
         }
         printf("]\n");
-    }
-}
-
-// ==================== Simple Test Kernel ====================
-
-/**
- * @brief Simple test kernel for debugging
- */
-__kernel void dpp_test_kernel(__global const float* input,
-                            __global float* output,
-                            const int size) {
-    const int idx = get_global_id(0);
-    if (idx < size) {
-        output[idx] = input[idx] * 2.0f;
     }
 }
