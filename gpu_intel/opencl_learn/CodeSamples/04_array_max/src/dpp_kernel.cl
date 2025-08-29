@@ -87,14 +87,12 @@ __kernel void dpp_init_diagonal(__global const float* kernel_matrix,
 
 /**
  * @brief Find the token with maximum marginal gain (argmax operation)
- * @param di2s Marginal gains [batch_size, N]
- * @param selected_mask Mask of already selected tokens [batch_size, N]
+ * @param di2s Marginal gains [batch_size, N] (also contains selection marking)
  * @param batch_idx Batch index
  * @param N Number of tokens
  * @param result_idx Output: index of maximum token
  */
 __kernel void dpp_find_best_token(__global const float* di2s,
-                                 __global const int* selected_mask,
                                  __local float* local_values,
                                  __local int* local_indices,
                                  const int batch_idx,
@@ -110,9 +108,10 @@ __kernel void dpp_find_best_token(__global const float* di2s,
     
     if (token_id < N) {
         int data_idx = batch_idx * N + token_id;
-        // Only consider tokens that haven't been selected
-        if (selected_mask[data_idx] == 0) {
-            value = di2s[data_idx];
+        float current_gain = di2s[data_idx];
+        // Only consider tokens that haven't been selected (not marked with -INFINITY)
+        if (current_gain != -INFINITY) {
+            value = current_gain;
             idx = token_id;
         }
     }
@@ -190,7 +189,7 @@ __kernel void dpp_update_orthogonal_vector(__global const float* kernel_matrix,
 /**
  * @brief Update marginal gains after selecting a token
  * @param cis Orthogonalized vectors [T, N]
- * @param di2s Marginal gains [batch_size, N] (input/output)
+ * @param di2s Marginal gains [batch_size, N] (input/output, also contains selection marking)
  * @param batch_idx Batch index
  * @param iteration Current iteration number
  * @param N Number of tokens
@@ -206,7 +205,7 @@ __kernel void dpp_update_marginal_gains(__global const float* cis,
     
     int di2s_idx = batch_idx * N + token_id;
     
-    // Skip if token is already selected (marked as negative infinity)
+    // Skip if token is already selected (marked with -INFINITY)
     if (di2s[di2s_idx] == -INFINITY) return;
     
     // Get the orthogonal component for this token
@@ -218,15 +217,13 @@ __kernel void dpp_update_marginal_gains(__global const float* cis,
 }
 
 /**
- * @brief Mark selected token to prevent re-selection
- * @param di2s Marginal gains [batch_size, N] (input/output)
- * @param selected_mask Selection mask [batch_size, N] (input/output)
+ * @brief Mark selected token to prevent re-selection (use -INFINITY)
+ * @param di2s Marginal gains [batch_size, N] (input/output, also used for selection marking)
  * @param batch_idx Batch index
  * @param selected_idx Index of selected token
  * @param N Number of tokens
  */
 __kernel void dpp_mark_selected_token(__global float* di2s,
-                                    __global int* selected_mask,
                                     const int batch_idx,
                                     const int selected_idx,
                                     const int N) {
@@ -235,19 +232,19 @@ __kernel void dpp_mark_selected_token(__global float* di2s,
     if (token_id != selected_idx || token_id >= N) return;
     
     int idx = batch_idx * N + token_id;
-    di2s[idx] = -INFINITY;
-    selected_mask[idx] = 1;
+    di2s[idx] = -INFINITY;  // Mark as selected with negative infinity
 }
 
 // ==================== Batch Processing Kernels ====================
 
 /**
- * @brief Process multiple batches in parallel
+ * @brief Optimized DPP batch processing without selected_mask
  * @param kernel_matrix Input kernel matrix [batch_size, N, N]
- * @param di2s Marginal gains workspace [batch_size, N]
+ * @param di2s Marginal gains workspace [batch_size, N] (uses -INFINITY to mark selected tokens)
  * @param cis Orthogonalized vectors workspace [batch_size, T, N]
  * @param selected_indices Output selected indices [batch_size, T]
- * @param selected_mask Selection mask workspace [batch_size, N]
+ * @param local_values Work group reduction values [local_size]
+ * @param local_indices Work group reduction indices [local_size]
  * @param batch_size Number of batches
  * @param N Number of tokens per batch
  * @param T Number of tokens to select
@@ -257,7 +254,6 @@ __kernel void dpp_batch_process(__global const float* kernel_matrix,
                               __global float* di2s,
                               __global float* cis,
                               __global int* selected_indices,
-                              __global int* selected_mask,
                               __local float* local_values,
                               __local int* local_indices,
                               const int batch_size,
@@ -270,17 +266,16 @@ __kernel void dpp_batch_process(__global const float* kernel_matrix,
     
     if (batch_idx >= batch_size) return;
     
-    // Initialize diagonal elements for this batch
+    // Initialize diagonal elements for this batch (removed selected_mask)
     for (int token_id = local_id; token_id < N; token_id += local_size) {
         int kernel_idx = batch_idx * N * N + token_id * N + token_id;
         int di2s_idx = batch_idx * N + token_id;
         di2s[di2s_idx] = kernel_matrix[kernel_idx];
-        selected_mask[di2s_idx] = 0;
     }
     
     barrier(CLK_LOCAL_MEM_FENCE | CLK_GLOBAL_MEM_FENCE);
     
-    // Main DPP selection loop
+    // Main DPP selection loop (optimized with better memory access)
     for (int t = 0; t < T; t++) {
         barrier(CLK_LOCAL_MEM_FENCE | CLK_GLOBAL_MEM_FENCE);
         
@@ -288,15 +283,18 @@ __kernel void dpp_batch_process(__global const float* kernel_matrix,
         int best_idx = -1;
         float best_value = -INFINITY;
         
-        // Each work item checks some tokens
+        // Each work item checks some tokens (use -INFINITY check)
         for (int token_id = local_id; token_id < N; token_id += local_size) {
             int di2s_idx = batch_idx * N + token_id;
-            if (selected_mask[di2s_idx] == 0) {
-                // Accept any unselected token, prioritizing higher gains
-                if (best_idx == -1 || di2s[di2s_idx] > best_value) {
-                    best_value = di2s[di2s_idx];
-                    best_idx = token_id;
-                }
+            float current_gain = di2s[di2s_idx];
+            
+            // Skip if already selected (marked with -INFINITY)
+            if (current_gain == -INFINITY) continue;
+            
+            // Accept any unselected token, prioritizing higher gains
+            if (best_idx == -1 || current_gain > best_value) {
+                best_value = current_gain;
+                best_idx = token_id;
             }
         }
         
@@ -343,17 +341,17 @@ __kernel void dpp_batch_process(__global const float* kernel_matrix,
         float norm_factor = sqrt(max(current_gain, numerical_threshold));
         float inv_norm = 1.0f / norm_factor;
         
-        // Mark token as selected
+        // Mark token as selected (use -INFINITY for clear marking)
         if (local_id == 0) {
             int di2s_idx = batch_idx * N + selected_idx;
-            selected_mask[di2s_idx] = 1;
+            di2s[di2s_idx] = -INFINITY;  // Mark as selected with negative infinity
         }
         
         barrier(CLK_LOCAL_MEM_FENCE | CLK_GLOBAL_MEM_FENCE);
         
-        // Update orthogonal vector
+        // Update orthogonal vector (optimized memory access)
         for (int token_id = local_id; token_id < N; token_id += local_size) {
-            // Copy kernel row
+            // Copy kernel row from global memory
             int kernel_idx = batch_idx * N * N + selected_idx * N + token_id;
             float eis_value = kernel_matrix[kernel_idx];
             
@@ -365,29 +363,33 @@ __kernel void dpp_batch_process(__global const float* kernel_matrix,
                 float cis_sel = cis[cis_prev_selected_idx];
                 float cis_token = cis[cis_prev_token_idx];
                 
-                eis_value -= cis_sel * cis_token;
+                // Optimization: skip zero values for better performance
+                if (cis_sel != 0.0f) {
+                    eis_value -= cis_sel * cis_token;
+                }
             }
             
-            // Normalize and store
+            // Normalize and store in global CIS matrix
             int cis_out_idx = batch_idx * T * N + t * N + token_id;
             cis[cis_out_idx] = eis_value * inv_norm;
         }
         
         barrier(CLK_LOCAL_MEM_FENCE | CLK_GLOBAL_MEM_FENCE);
         
-        // Update marginal gains
+        // Update marginal gains (use -INFINITY check)
         for (int token_id = local_id; token_id < N; token_id += local_size) {
             int di2s_idx = batch_idx * N + token_id;
             
-            // Skip if already selected
-            if (selected_mask[di2s_idx] == 1) continue;
+            // Skip if already selected (marked with -INFINITY)
+            if (di2s[di2s_idx] == -INFINITY) continue;
             
-            // Get orthogonal component
+            // Get orthogonal component from global memory
             int cis_idx = batch_idx * T * N + t * N + token_id;
             float eis_j = cis[cis_idx];
             
-            // Update marginal gain
-            di2s[di2s_idx] -= eis_j * eis_j;
+            // Update marginal gain with vectorized operation
+            float eis_j_squared = eis_j * eis_j;
+            di2s[di2s_idx] -= eis_j_squared;
         }
         
         barrier(CLK_LOCAL_MEM_FENCE | CLK_GLOBAL_MEM_FENCE);

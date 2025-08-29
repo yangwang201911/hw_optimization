@@ -86,26 +86,26 @@ public:
     
     void selectTokens(const std::vector<float>& kernel_data,
                      int batch_size, int N, int T) {
-        // Create OpenCL buffers
+        // Create OpenCL buffers (removed selected_mask buffer)
         cl::Buffer buffer_kernel_matrix(context, CL_MEM_READ_ONLY, sizeof(float) * kernel_data.size());
-        cl::Buffer buffer_di2s(context, CL_MEM_READ_WRITE, sizeof(float) * N);
-        cl::Buffer buffer_cis(context, CL_MEM_READ_WRITE, sizeof(float) * N * T);
-        cl::Buffer buffer_selected(context, CL_MEM_READ_WRITE, sizeof(int) * batch_size * T);  // Fixed: READ_WRITE for read back
-        cl::Buffer buffer_mask(context, CL_MEM_READ_WRITE, sizeof(int) * N);
+        cl::Buffer buffer_di2s(context, CL_MEM_READ_WRITE, sizeof(float) * batch_size * N);
+        cl::Buffer buffer_cis(context, CL_MEM_READ_WRITE, sizeof(float) * batch_size * T * N);
+        cl::Buffer buffer_selected(context, CL_MEM_WRITE_ONLY, sizeof(int) * batch_size * T);
 
         // Copy input data to device
-        queue.enqueueWriteBuffer(buffer_kernel_matrix, CL_TRUE, 0, sizeof(float) * kernel_data.size(), kernel_data.data());        // Set kernel arguments
+        queue.enqueueWriteBuffer(buffer_kernel_matrix, CL_TRUE, 0, sizeof(float) * kernel_data.size(), kernel_data.data());
+        
+        // Set kernel arguments (simplified parameter list)
         kernel_batch_process.setArg(0, buffer_kernel_matrix);
         kernel_batch_process.setArg(1, buffer_di2s);
         kernel_batch_process.setArg(2, buffer_cis);
         kernel_batch_process.setArg(3, buffer_selected);
-        kernel_batch_process.setArg(4, buffer_mask);
-        kernel_batch_process.setArg(5, cl::Local(sizeof(float) * 256));  // local_values
-        kernel_batch_process.setArg(6, cl::Local(sizeof(int) * 256));    // local_indices
-        kernel_batch_process.setArg(7, batch_size);
-        kernel_batch_process.setArg(8, N);
-        kernel_batch_process.setArg(9, T);
-        kernel_batch_process.setArg(10, 1e-8f);  // numerical_threshold
+        kernel_batch_process.setArg(4, cl::Local(sizeof(float) * 256));   // local_values
+        kernel_batch_process.setArg(5, cl::Local(sizeof(int) * 256));     // local_indices
+        kernel_batch_process.setArg(6, batch_size);
+        kernel_batch_process.setArg(7, N);
+        kernel_batch_process.setArg(8, T);
+        kernel_batch_process.setArg(9, 1e-8f);  // numerical_threshold
         
         // Execute kernel
         cl::NDRange global_size(batch_size * 256);  // 256 work items per batch
