@@ -90,7 +90,7 @@ public:
         cl::Buffer buffer_kernel_matrix(context, CL_MEM_READ_ONLY, sizeof(float) * kernel_data.size());
         cl::Buffer buffer_di2s(context, CL_MEM_READ_WRITE, sizeof(float) * N);
         cl::Buffer buffer_cis(context, CL_MEM_READ_WRITE, sizeof(float) * N * T);
-        cl::Buffer buffer_selected(context, CL_MEM_WRITE_ONLY, sizeof(int) * T);
+        cl::Buffer buffer_selected(context, CL_MEM_READ_WRITE, sizeof(int) * batch_size * T);  // Fixed: READ_WRITE for read back
         cl::Buffer buffer_mask(context, CL_MEM_READ_WRITE, sizeof(int) * N);
 
         // Copy input data to device
@@ -111,18 +111,25 @@ public:
         cl::NDRange global_size(batch_size * 256);  // 256 work items per batch
         cl::NDRange local_size(256);
         
+        std::cout << "  Starting GPU kernel execution..." << std::endl;
+        std::cout << "  Global work size: " << global_size[0] << ", Local work size: " << local_size[0] << std::endl;
+        std::cout << "  Expected computation: " << N << "x" << N << " matrix, " << T << " selections" << std::endl;
+        
         auto start = std::chrono::high_resolution_clock::now();
         queue.enqueueNDRangeKernel(kernel_batch_process, cl::NullRange, global_size, local_size);
+        std::cout << "  Kernel enqueued, waiting for completion..." << std::endl;
         queue.finish();
         auto end = std::chrono::high_resolution_clock::now();
         
-        auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
-        std::cout << "OpenCL DPP execution time: " << duration.count() << " us" << std::endl;
+        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+        std::cout << "  GPU kernel execution time: " << duration.count() << " ms" << std::endl;
         
         // Read results
+        std::cout << " Start copying results from GPU to CPU..." << std::endl;
         std::vector<int> selected_flat(batch_size * T);
         queue.enqueueReadBuffer(buffer_selected, CL_TRUE, 0, sizeof(int) * batch_size * T, selected_flat.data());
         
+        std::cout << "  ======   " << std::endl;
         // Convert to 2D result
         std::vector<std::vector<int>> result(batch_size);
         for (int b = 0; b < batch_size; b++) {
@@ -131,7 +138,8 @@ public:
                 result[b][t] = selected_flat[b * T + t];
             }
         }
-        
+        std::cout << "  GPU results copied to CPU memory." << std::endl;
+
         return result;
     }
     
@@ -239,9 +247,10 @@ int main(int argc, char** argv) {
         }
         
         // Get kernel file name from remaining arguments
-        if (optind < argc) {
-            kernel_file = argv[optind];
-        }
+        //if (optind < argc) {
+        //    kernel_file = argv[optind];
+        //}
+        kernel_file = "/home/ywang2/hw_optimization/gpu_intel/opencl_learn/CodeSamples/04_array_max/src/dpp_kernel.cl";
         
         // Calculate number of tokens to select
         int T = std::max(1, static_cast<int>(std::round(N * select_percentage / 100.0f)));
@@ -299,7 +308,22 @@ int main(int argc, char** argv) {
         }
         
         // Run OpenCL implementation
+        std::cout << "Running DPP algorithm..." << std::endl;
+        
+        // Sanity checks for large computations
+        if (N > 500) {
+            std::cout << "Warning: Large matrix size (" << N << "x" << N << ") may take significant time!" << std::endl;
+        }
+        if (T > 100) {
+            std::cout << "Warning: Selecting " << T << " tokens may take significant time!" << std::endl;
+        }
+        
+        auto total_start = std::chrono::high_resolution_clock::now();
         auto ocl_result = dpp_ocl.selectTokens(kernel_data, batch_size, N, T);
+        auto total_end = std::chrono::high_resolution_clock::now();
+        
+        auto total_duration = std::chrono::duration_cast<std::chrono::milliseconds>(total_end - total_start);
+        std::cout << "Total execution time (including data transfer): " << total_duration.count() << " ms" << std::endl;
         
         // Print results
         std::cout << "\nOpenCL DPP Results:" << std::endl;
