@@ -84,8 +84,8 @@ public:
         std::cout << "Kernels loaded successfully!" << std::endl;
     }
     
-    std::vector<std::vector<int>> selectTokens(const std::vector<float>& kernel_data,
-                                              int batch_size, int N, int T) {
+    void selectTokens(const std::vector<float>& kernel_data,
+                     int batch_size, int N, int T) {
         // Create OpenCL buffers
         cl::Buffer buffer_kernel_matrix(context, CL_MEM_READ_ONLY, sizeof(float) * kernel_data.size());
         cl::Buffer buffer_di2s(context, CL_MEM_READ_WRITE, sizeof(float) * N);
@@ -112,35 +112,14 @@ public:
         cl::NDRange local_size(256);
         
         std::cout << "  Starting GPU kernel execution..." << std::endl;
-        std::cout << "  Global work size: " << global_size[0] << ", Local work size: " << local_size[0] << std::endl;
-        std::cout << "  Expected computation: " << N << "x" << N << " matrix, " << T << " selections" << std::endl;
         
         auto start = std::chrono::high_resolution_clock::now();
         queue.enqueueNDRangeKernel(kernel_batch_process, cl::NullRange, global_size, local_size);
-        std::cout << "  Kernel enqueued, waiting for completion..." << std::endl;
         queue.finish();
         auto end = std::chrono::high_resolution_clock::now();
         
         auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
         std::cout << "  GPU kernel execution time: " << duration.count() << " ms" << std::endl;
-        
-        // Read results
-        std::cout << " Start copying results from GPU to CPU..." << std::endl;
-        std::vector<int> selected_flat(batch_size * T);
-        queue.enqueueReadBuffer(buffer_selected, CL_TRUE, 0, sizeof(int) * batch_size * T, selected_flat.data());
-        
-        std::cout << "  ======   " << std::endl;
-        // Convert to 2D result
-        std::vector<std::vector<int>> result(batch_size);
-        for (int b = 0; b < batch_size; b++) {
-            result[b].resize(T);
-            for (int t = 0; t < T; t++) {
-                result[b][t] = selected_flat[b * T + t];
-            }
-        }
-        std::cout << "  GPU results copied to CPU memory." << std::endl;
-
-        return result;
     }
     
     void testSimpleKernel() {
@@ -169,26 +148,22 @@ public:
     }
 };
 
-// Function to generate a random positive definite kernel matrix
+// Function to generate a fixed positive definite kernel matrix
+// This function generates the same pattern as create_test_kernel in hello_dpp_traditional.cpp
 std::vector<float> generateKernelMatrix(int N, int seed = 42) {
-    std::mt19937 gen(seed);
-    std::uniform_real_distribution<float> dis(0.1f, 1.0f);
-    
     std::vector<float> kernel_matrix(N * N);
     
-    // Generate a random matrix and make it symmetric positive definite
+    // Generate the same pattern as create_test_kernel function for consistency
     for (int i = 0; i < N; i++) {
         for (int j = 0; j < N; j++) {
-            if (i <= j) {
-                if (i == j) {
-                    // Diagonal elements - ensure positive definiteness
-                    kernel_matrix[i * N + j] = dis(gen) + 0.5f;
-                } else {
-                    // Off-diagonal elements
-                    float val = dis(gen) * 0.5f;  // Smaller off-diagonal values
-                    kernel_matrix[i * N + j] = val;
-                    kernel_matrix[j * N + i] = val;  // Symmetric
-                }
+            int idx = i * N + j;
+            if (i == j) {
+                // Diagonal elements (higher for more important tokens)
+                kernel_matrix[idx] = 1.0f + static_cast<float>(i) * 0.1f;
+            } else {
+                // Off-diagonal elements (similarity between tokens)
+                float similarity = 0.5f * std::exp(-std::abs(static_cast<float>(i) - static_cast<float>(j)) / 2.0f);
+                kernel_matrix[idx] = similarity;
             }
         }
     }
@@ -310,35 +285,12 @@ int main(int argc, char** argv) {
         // Run OpenCL implementation
         std::cout << "Running DPP algorithm..." << std::endl;
         
-        // Sanity checks for large computations
-        if (N > 500) {
-            std::cout << "Warning: Large matrix size (" << N << "x" << N << ") may take significant time!" << std::endl;
-        }
-        if (T > 100) {
-            std::cout << "Warning: Selecting " << T << " tokens may take significant time!" << std::endl;
-        }
-        
         auto total_start = std::chrono::high_resolution_clock::now();
-        auto ocl_result = dpp_ocl.selectTokens(kernel_data, batch_size, N, T);
+        dpp_ocl.selectTokens(kernel_data, batch_size, N, T);
         auto total_end = std::chrono::high_resolution_clock::now();
         
         auto total_duration = std::chrono::duration_cast<std::chrono::milliseconds>(total_end - total_start);
         std::cout << "Total execution time (including data transfer): " << total_duration.count() << " ms" << std::endl;
-        
-        // Print results
-        std::cout << "\nOpenCL DPP Results:" << std::endl;
-        for (int b = 0; b < batch_size; b++) {
-            std::cout << "Batch " << b << ": [";
-            size_t display_count = std::min(ocl_result[b].size(), static_cast<size_t>(10));
-            for (size_t i = 0; i < display_count; i++) {
-                std::cout << ocl_result[b][i];
-                if (i < display_count-1) std::cout << ", ";
-            }
-            if (ocl_result[b].size() > 10) {
-                std::cout << ", +" << (ocl_result[b].size() - 10) << " more";
-            }
-            std::cout << "]" << std::endl;
-        }
         
         std::cout << "\n=== Test completed ===" << std::endl;
         

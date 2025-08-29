@@ -282,26 +282,6 @@ __kernel void dpp_batch_process(__global const float* kernel_matrix,
     
     // Main DPP selection loop
     for (int t = 0; t < T; t++) {
-        // Debug: Print current marginal gains (only first work item of first batch, and only first 10 iterations)
-        if (batch_idx == 0 && local_id == 0 && t < 10) {
-            printf("=== Iteration %d ===\n", t);
-            printf("Current marginal gains: [");
-            int display_count = min(N, 10);
-            for (int i = 0; i < display_count; i++) {
-                int di2s_idx = batch_idx * N + i;
-                if (selected_mask[di2s_idx] == 0) {
-                    printf("%.3f", di2s[di2s_idx]);
-                } else {
-                    printf("SELECTED");
-                }
-                if (i < display_count-1) printf(", ");
-            }
-            if (N > 10) {
-                printf(", +%d more", N - 10);
-            }
-            printf("]\n");
-        }
-        
         barrier(CLK_LOCAL_MEM_FENCE | CLK_GLOBAL_MEM_FENCE);
         
         // Find best token for this iteration
@@ -311,9 +291,12 @@ __kernel void dpp_batch_process(__global const float* kernel_matrix,
         // Each work item checks some tokens
         for (int token_id = local_id; token_id < N; token_id += local_size) {
             int di2s_idx = batch_idx * N + token_id;
-            if (selected_mask[di2s_idx] == 0 && di2s[di2s_idx] > best_value) {
-                best_value = di2s[di2s_idx];
-                best_idx = token_id;
+            if (selected_mask[di2s_idx] == 0) {
+                // Accept any unselected token, prioritizing higher gains
+                if (best_idx == -1 || di2s[di2s_idx] > best_value) {
+                    best_value = di2s[di2s_idx];
+                    best_idx = token_id;
+                }
             }
         }
         
@@ -326,7 +309,9 @@ __kernel void dpp_batch_process(__global const float* kernel_matrix,
         // Reduction to find global maximum for this batch
         for (int stride = local_size / 2; stride > 0; stride /= 2) {
             if (local_id < stride) {
-                if (local_values[local_id + stride] > local_values[local_id]) {
+                // Prefer valid tokens (idx != -1), then higher values
+                if (local_indices[local_id + stride] != -1 && 
+                    (local_indices[local_id] == -1 || local_values[local_id + stride] > local_values[local_id])) {
                     local_values[local_id] = local_values[local_id + stride];
                     local_indices[local_id] = local_indices[local_id + stride];
                 }
@@ -339,18 +324,23 @@ __kernel void dpp_batch_process(__global const float* kernel_matrix,
         
         barrier(CLK_LOCAL_MEM_FENCE);
         
+        // Safety check: if no valid token found, break early
+        if (selected_idx == -1) {
+            if (local_id == 0) {
+                printf("Warning: No valid token found at iteration %d\n", t);
+            }
+            break;
+        }
+        
         // Store selected index
         if (local_id == 0) {
             selected_indices[batch_idx * T + t] = selected_idx;
         }
         
-        // Debug: Print selection result (only first work item of first batch, and only first 10 iterations)
-        if (batch_idx == 0 && local_id == 0 && t < 10) {
-            printf("Selected token %d with marginal gain %.3f\n", selected_idx, local_values[0]);
-        }
-        
         // Calculate norm_factor BEFORE marking token as selected
-        float norm_factor = sqrt(local_values[0] + numerical_threshold);
+        float current_gain = local_values[0];
+        // Ensure positive value for sqrt
+        float norm_factor = sqrt(max(current_gain, numerical_threshold));
         float inv_norm = 1.0f / norm_factor;
         
         // Mark token as selected
@@ -401,27 +391,20 @@ __kernel void dpp_batch_process(__global const float* kernel_matrix,
         }
         
         barrier(CLK_LOCAL_MEM_FENCE | CLK_GLOBAL_MEM_FENCE);
-        
-        // Debug: Print updated marginal gains (only first work item of first batch, and only first 10 iterations)
-        if (batch_idx == 0 && local_id == 0 && t < 10) {
-            printf("Updated marginal gains: [");
-            int display_count = min(N, 10);
-            for (int i = 0; i < display_count; i++) {
-                int di2s_idx = batch_idx * N + i;
-                if (selected_mask[di2s_idx] == 0) {
-                    printf("%.3f", di2s[di2s_idx]);
-                } else {
-                    printf("SELECTED");
-                }
-                if (i < display_count-1) printf(", ");
-            }
-            if (N > 10) {
-                printf(", +%d more", N - 10);
-            }
-            printf("]\n\n");
-        } else if (batch_idx == 0 && local_id == 0 && t == 10) {
-            printf("... (remaining %d iterations not shown)\n\n", T - 10);
+    }
+    
+    // Output selected token IDs after DPP algorithm completion
+    if (batch_idx == 0 && local_id == 0) {
+        printf("DPP Selection Results for Batch %d: [", batch_idx);
+        int display_count = min(T, 10);
+        for (int t = 0; t < display_count; t++) {
+            printf("%d", selected_indices[batch_idx * T + t]);
+            if (t < display_count-1) printf(", ");
         }
+        if (T > 10) {
+            printf(", +%d more", T - 10);
+        }
+        printf("]\n");
     }
 }
 
