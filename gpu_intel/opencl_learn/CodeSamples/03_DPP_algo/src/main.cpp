@@ -20,7 +20,7 @@ static cl_uint g_max_compute_units = 0;
 
 std::vector<int> run_dpp_kernel(Tensor &mat, int selected_token_num = 0)
 {
-	std::string kernel_fn = "../03_DPP_algo/src/dpp_kernel.cl";
+	std::string kernel_fn = "/home/ywang2/hw_optimization/gpu_intel/opencl_learn/CodeSamples/03_DPP_algo/src/dpp_kernel_split.cl";
 	std::string kernel_entry = "dpp_kernel";
 	auto my_ocl = CMyTest(kernel_entry, kernel_fn);
 
@@ -131,8 +131,11 @@ std::vector<int> run_ref(Tensor& mat, int selected_token_num = 0) {
 	return concatenated_vec;
 }
 
-int main()
+int main(int argc, char* argv[])
 {
+	std::string kernel_fn;
+	if (argc > 1)
+		kernel_fn = std::string(argv[1]);
 	std::cout << "== Test DPP algorithm. " << std::endl;
 	get_device_info(g_max_ws_in_one_group, g_max_compute_units);
 
@@ -161,7 +164,7 @@ int main()
 		selected_token_gpu = run_dpp_kernel(mat, selected_token_num);
 	}
 	else if (dpp_spilt_kernel) {
-		selected_token_gpu = run_dpp_split_kernel(mat, selected_token_num);
+		selected_token_gpu = run_dpp_split_kernel(mat, selected_token_num, kernel_fn);
 	}
 
 	std::cout << "== Ref VS GPU result compare:" << std::endl;

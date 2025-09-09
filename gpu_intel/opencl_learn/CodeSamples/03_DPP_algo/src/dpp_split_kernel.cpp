@@ -20,9 +20,9 @@ inline cl::Kernel get_kernel_argmax(CMyTest &my_ocl)
 	return my_ocl.get_kernel(kernel_entry);
 }
 
-std::vector<int> run_dpp_split_kernel(Tensor &mat, int selected_token_num)
+std::vector<int> run_dpp_split_kernel(Tensor &mat, int selected_token_num, const std::string& kernel_fn)
 {
-	std::string kernel_fn = "../03_DPP_algo/src/dpp_kernel_split.cl";
+	//std::string kernel_fn = "/home/ywang2/hw_optimization/gpu_intel/opencl_learn/CodeSamples/03_DPP_algo/src/dpp_kernel_split.cl";
 	std::string kernel_entry = "update_orthogonal_vector";
 	auto my_ocl = CMyTest(kernel_entry, kernel_fn);
 
