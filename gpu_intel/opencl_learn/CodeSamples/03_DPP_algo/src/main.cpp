@@ -8,6 +8,8 @@
 #include <stdint.h>
 #include <algorithm>
 #include <chrono>
+#include <string>
+#include <cstring>
 
 #include "kernel_io.hpp"
 #include "dpp_ref.hpp"
@@ -18,6 +20,77 @@
 
 static size_t g_max_ws_in_one_group[3] = {0};
 static cl_uint g_max_compute_units = 0;
+
+// Command line parameters structure
+struct CommandLineArgs {
+    int batch_size = 1;
+    int token_count = (3577+16)/16*16;
+    bool one_group = false;  // 默认为false，指定参数时设为true
+    bool split_kernel = false;  // 默认为false，指定参数时设为true
+    std::string kernel_file;
+};
+
+void print_usage(const char* program_name) {
+    std::cout << "Usage: " << program_name << " [options]\n";
+    std::cout << "Options:\n";
+    std::cout << "  -b, --batch <num>     Batch size (default: 1)\n";
+    std::cout << "  -m, --tokens <num>    Number of tokens (default: " << (3577+16)/16*16 << ")\n";
+    std::cout << "  -k, --kernel <file>   OpenCL kernel file path (required)\n";
+    std::cout << "  -one_group            Use one group mode (default: false)\n";
+    std::cout << "  -split                Use split kernel mode (default: false)\n";
+    std::cout << "  -h, --help            Show this help message\n";
+    std::cout << "\nExample:\n";
+    std::cout << "  " << program_name << " -b 2 -m 1792 -split -k kernel.cl\n";
+    std::cout << "  " << program_name << " --batch 2 --tokens 1792 --kernel dpp_kernel_split.cl -one_group\n";
+}
+
+CommandLineArgs parse_command_line(int argc, char* argv[]) {
+    CommandLineArgs args;
+    
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-b") == 0 || strcmp(argv[i], "--batch") == 0) {
+            if (i + 1 < argc) {
+                args.batch_size = std::atoi(argv[++i]);
+            } else {
+                std::cerr << "Error: -b requires a value\n";
+                exit(1);
+            }
+        }
+        else if (strcmp(argv[i], "-m") == 0 || strcmp(argv[i], "--tokens") == 0) {
+            if (i + 1 < argc) {
+                args.token_count = std::atoi(argv[++i]);
+            } else {
+                std::cerr << "Error: -m requires a value\n";
+                exit(1);
+            }
+        }
+        else if (strcmp(argv[i], "-k") == 0 || strcmp(argv[i], "--kernel") == 0) {
+            if (i + 1 < argc) {
+                args.kernel_file = argv[++i];
+            } else {
+                std::cerr << "Error: -k requires a kernel file path\n";
+                exit(1);
+            }
+        }
+        else if (strcmp(argv[i], "-one_group") == 0) {
+            args.one_group = true;  // 指定了参数就设为true，不需要值
+        }
+        else if (strcmp(argv[i], "-split") == 0) {
+            args.split_kernel = true;  // 指定了参数就设为true，不需要值
+        }
+        else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
+            print_usage(argv[0]);
+            exit(0);
+        }
+        else {
+            std::cerr << "Error: Unknown option " << argv[i] << "\n";
+            print_usage(argv[0]);
+            exit(1);
+        }
+    }
+    
+    return args;
+}
 
 std::vector<int> run_dpp_kernel(Tensor &mat, const std::string& kernel_fn, int selected_token_num = 0)
 {
@@ -133,56 +206,67 @@ std::vector<int> run_ref(Tensor& mat, int selected_token_num = 0) {
 
 int main(int argc, char* argv[])
 {
-	std::string kernel_fn;
-	if (argc > 1)
-		kernel_fn = std::string(argv[1]);
-	std::cout << "== Test DPP algorithm. " << std::endl;
-	get_device_info(g_max_ws_in_one_group, g_max_compute_units);
+    // Parse command line arguments
+    CommandLineArgs args = parse_command_line(argc, argv);
+    
+    if (args.kernel_file.empty()) {
+        std::cerr << "Error: Kernel file is required\n";
+        print_usage(argv[0]);
+        return 1;
+    }
+    
+    std::cout << "== Test DPP algorithm. " << std::endl;
+    get_device_info(g_max_ws_in_one_group, g_max_compute_units);
 
-	int M = (3577+16)/16*16;
-	int B = 1;
-	get_env_int("M", M);
-	get_env_int("B", B);
-	bool dpp_one_group = true;
-	get_env_bool("ONE_GROUP", dpp_one_group);
-	bool dpp_spilt_kernel = false;
-	get_env_bool("SPLIT", dpp_spilt_kernel);
+    int M = args.token_count;
+    int B = args.batch_size;
+    bool dpp_one_group = args.one_group;
+    bool dpp_spilt_kernel = args.split_kernel;
 
-	// ==================
-	std::cout << "== Generate random test data." << std::endl;	
-	std::cout << "  M = " << M << std::endl;
-	std::cout << "  B = " << B << std::endl;
-	auto mat = Tensor(B, M, M);
-	mat.random_data();
-	int selected_token_num = M * 0.5;
-	// selected_token_num = 1;
-	
-	std::cout << "== Start to run DPP Reference." << std::endl;
-	std::vector<int> selected_token_ref;
-	selected_token_ref = run_ref(mat, selected_token_num);
+    // ==================
+    std::cout << "== Generate random test data." << std::endl;	
+    std::cout << "  M = " << M << std::endl;
+    std::cout << "  B = " << B << std::endl;
+    std::cout << "  ONE_GROUP = " << (dpp_one_group ? 1 : 0) << std::endl;
+    std::cout << "  SPLIT = " << (dpp_spilt_kernel ? 1 : 0) << std::endl;
+    std::cout << "  Kernel file = " << args.kernel_file << std::endl;
+    
+    auto mat = Tensor(B, M, M);
+    mat.random_data();
+    int selected_token_num = M * 0.5;
+    // selected_token_num = 1;
+    
+    std::cout << "== Start to run DPP Reference." << std::endl;
+    std::vector<int> selected_token_ref;
+    selected_token_ref = run_ref(mat, selected_token_num);
 
-	std::cout << "== Start to run DPP GPU kernel." << std::endl;
-	std::vector<int> selected_token_gpu;
-	if (dpp_one_group) {
-		selected_token_gpu = run_dpp_kernel(mat, kernel_fn, selected_token_num);
-	}
-	else if (dpp_spilt_kernel) {
-		selected_token_gpu = run_dpp_split_kernel(mat, g_max_ws_in_one_group, kernel_fn, selected_token_num);
-	}
+    std::cout << "== Start to run DPP GPU kernel." << std::endl;
+    std::vector<int> selected_token_gpu;
+    if (dpp_one_group) {
+        selected_token_gpu = run_dpp_kernel(mat, args.kernel_file, selected_token_num);
+    }
+    else if (dpp_spilt_kernel) {
+        selected_token_gpu = run_dpp_split_kernel(mat, g_max_ws_in_one_group, args.kernel_file, selected_token_num);
+    }
+    else {
+        std::cerr << "Error: Must specify either -one_group or -split mode\n";
+        print_usage(argv[0]);
+        return 1;
+    }
 
-	std::cout << "== Ref VS GPU result compare:" << std::endl;
-	if (!is_same<int>(selected_token_ref, selected_token_gpu))
-	{
-		std::cout << "  == Fail, diff as follow:" << std::endl;
-		print_diff<int>(selected_token_ref, selected_token_gpu, 0.0001f, true);
+    std::cout << "== Ref VS GPU result compare:" << std::endl;
+    if (!is_same<int>(selected_token_ref, selected_token_gpu))
+    {
+        std::cout << "  == Fail, diff as follow:" << std::endl;
+        print_diff<int>(selected_token_ref, selected_token_gpu, 0.0001f, true);
 
-		std::cout << "== Failed." << std::endl;
-	}
-	else
-	{
-		std::cout << "  == Success." << std::endl;
-		std::cout << "== Done." << std::endl;
-	}
+        std::cout << "== Failed." << std::endl;
+    }
+    else
+    {
+        std::cout << "  == Success." << std::endl;
+        std::cout << "== Done." << std::endl;
+    }
 
-	return 0;
+    return 0;
 }
