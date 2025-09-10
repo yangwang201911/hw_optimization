@@ -183,7 +183,7 @@ void FastGreedyDPP::update_orthogonal_vector(const Tensor& mat, size_t batch_idx
     float norm_factor = std::sqrt(di2s_data[selected_idx] + m_config.numerical_threshold);
     float inv_norm = 1.0f / norm_factor;
 
-    size_t base_kernel_offset = batch_idx * total_tokens * total_tokens + selected_idx * total_tokens;
+    size_t base_kernel_offset = selected_idx * total_tokens;
     const float *kernel_row = kernel_data + base_kernel_offset;
 
     float *cis_out = cis_data + iteration * total_tokens;
@@ -221,7 +221,7 @@ void FastGreedyDPP::update_orthogonal_vector(const Tensor& mat, size_t batch_idx
     // Compute the new orthogonal vector for each token
     for (size_t j = 0; j < total_tokens; ++j) {
         // Get mat[batch_idx, selected_idx, j]
-        size_t kernel_idx = batch_idx * total_tokens * total_tokens + selected_idx * total_tokens + j;
+        size_t kernel_idx = selected_idx * total_tokens + j;
         float kernel_val = kernel_data[kernel_idx];
 
         // Subtract the projection onto previously selected vectors

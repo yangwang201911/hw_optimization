@@ -2,6 +2,7 @@
 #pragma OPENCL EXTENSION cl_khr_global_int32_extended_atomics : enable
 #pragma OPENCL EXTENSION cl_intel_printf : enable
 
+#define TRANSPOSE_CIS 1
 
 // 跨group，OpenCL本身是不支持同步的，所以求最大值这种操作，必须在一个group内完成。
 // Step1: 获取最大支持的group size(一个group最大支持的workitem)，
@@ -98,7 +99,39 @@ __kernel void update_orthogonal_vector(__global const float *inp_mat, const int 
     // Subtract the projection onto previously selected vectors
     // sum(cis[:iteration, selected_idx] * cis[:iteration, j])
     float projection = 0.0f;
+
+#if TRANSPOSE_CIS
+    __global float *cis_selected_t = cis_data + selected_token_num * selected_idx;
+    __global float *cis_t = cis_data + selected_token_num * j;
+
+#if 0 // float4
+    int iter4 = iteration / 4;
+    int iter_remain = iteration % 4;
+    for (size_t prev_t = 0; prev_t < iter4; ++prev_t)
+    {
+        float4 a_vec = vload4(0, cis_selected_t + prev_t * 4);
+        float4 b_vec = vload4(0, cis_t + prev_t * 4);
+        projection += dot(a_vec, b_vec);
+        // projection += cis_selected_t[prev_t] * cis_t[prev_t];
+    }
+    for (int prev_t = iter4 - iter_remain; prev_t < iteration; ++prev_t)
+    {
+        half a_val = cis_selected_t[prev_t];
+        half b_val = cis_t[prev_t];
+        projection += cis_selected_t[prev_t] * cis_t[prev_t];
+    }
+#else
     __attribute__((opencl_unroll_hint(4)))
+    for (size_t prev_t = 0; prev_t < iteration; ++prev_t)
+    {
+        projection += cis_selected_t[prev_t] * cis_t[prev_t];
+    }
+#endif
+
+    // Store the orthogonalized vector element
+    size_t cis_current_idx = iteration + j * selected_token_num;
+    cis_data[cis_current_idx] = (kernel_val - projection) / norm_factor;
+#else
     for (size_t prev_t = 0; prev_t < iteration; ++prev_t)
     {
         size_t offset = prev_t * total_tokens;
@@ -106,10 +139,10 @@ __kernel void update_orthogonal_vector(__global const float *inp_mat, const int 
         size_t cis_j_idx = offset + j;
         projection += cis_data[cis_selected_idx] * cis_data[cis_j_idx];
     }
-
     // Store the orthogonalized vector element
     size_t cis_current_idx = iteration * total_tokens + j;
     cis_data[cis_current_idx] = (kernel_val - projection) / norm_factor;
+#endif
 }
 
 __kernel void update_marginal_gains(const int iteration, const int M, __global int *output_id,
@@ -130,7 +163,11 @@ __kernel void update_marginal_gains(const int iteration, const int M, __global i
         return;
     }
 
+#if TRANSPOSE_CIS
+    size_t cis_idx = iteration + j * selected_token_num;
+#else
     size_t cis_idx = iteration * M + j;
+#endif
     float eis_j = cis_data[cis_idx];
 
     // Subtract the squared orthogonal component
@@ -138,6 +175,7 @@ __kernel void update_marginal_gains(const int iteration, const int M, __global i
         di2s_data[selected_idx] = -INFINITY;
         output_ids_data[iteration] = selected_idx;
     }
-    else
+    else {
         di2s_data[j] -= eis_j * eis_j;
+    }
 }
