@@ -10,7 +10,6 @@
 #include <algorithm>
 
 #include "my_log.hpp"
-#include "level_zero/ze_api.h"
 
 // Check all ze function return.
 #define CHECK_RET(RET)                                                                                                      \
@@ -19,17 +18,6 @@
         std::cout << "== Fail: return " << std::hex << RET << std::dec << ", " << __FILE__ << ":" << __LINE__ << std::endl; \
         exit(0);                                                                                                            \
     }
-
-inline std::string ze_rslt_to_str(ze_result_t r) {
-	switch (r)
-	{
-#define CASE(ITM) case ITM: return #ITM
-	CASE(ZE_RESULT_ERROR_MODULE_BUILD_FAILURE);
-	CASE(ZE_RESULT_ERROR_INVALID_ARGUMENT);
-	default:
-		return "";
-	}
-};
 
 #ifndef SUCCESS_OR_TERMINATE
 #define SUCCESS_OR_TERMINATE(fun)                                                                                                       \
