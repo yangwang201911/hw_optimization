@@ -11,7 +11,6 @@
 #include "kernel_io.hpp"
 #include "dpp_ref.hpp"
 #include "my_log.hpp"
-#include "my_common.hpp"
 #include "my_ocl.hpp"
 
 inline cl::Kernel get_kernel_argmax(CMyTest &my_ocl)
