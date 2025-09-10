@@ -7,6 +7,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <algorithm>
+#include <chrono>
 
 #include "kernel_io.hpp"
 #include "dpp_ref.hpp"
