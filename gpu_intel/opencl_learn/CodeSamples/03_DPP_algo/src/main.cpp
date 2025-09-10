@@ -19,9 +19,8 @@
 static size_t g_max_ws_in_one_group[3] = {0};
 static cl_uint g_max_compute_units = 0;
 
-std::vector<int> run_dpp_kernel(Tensor &mat, int selected_token_num = 0)
+std::vector<int> run_dpp_kernel(Tensor &mat, const std::string& kernel_fn, int selected_token_num = 0)
 {
-	std::string kernel_fn = "/home/ywang2/hw_optimization/gpu_intel/opencl_learn/CodeSamples/03_DPP_algo/src/dpp_kernel_split.cl";
 	std::string kernel_entry = "dpp_kernel";
 	auto my_ocl = CMyTest(kernel_entry, kernel_fn);
 
@@ -165,7 +164,7 @@ int main(int argc, char* argv[])
 	std::cout << "== Start to run DPP GPU kernel." << std::endl;
 	std::vector<int> selected_token_gpu;
 	if (dpp_one_group) {
-		selected_token_gpu = run_dpp_kernel(mat, selected_token_num);
+		selected_token_gpu = run_dpp_kernel(mat, kernel_fn, selected_token_num);
 	}
 	else if (dpp_spilt_kernel) {
 		selected_token_gpu = run_dpp_split_kernel(mat, g_max_ws_in_one_group, kernel_fn, selected_token_num);
